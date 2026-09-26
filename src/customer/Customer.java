@@ -3,19 +3,18 @@ package customer;
 import manager.ResourceManager;
 import manager.StatisticsManager;
 import event.SimulationBus;
-import event.MachineType;
 import facility.WashingMachine;
 import facility.Dryer;
 import facility.PaymentKiosk;
 import exception.MachineFailureException;
 import exception.PaymentFailureException;
 import util.Logger;
-import util.RandomUtil;
 import util.TimeUtil;
 
 /**
- * Represents a single customer as a runnable thread.
- * Each customer goes through: Wash -> Dry -> Pay lifecycle.
+ * Represents an individual customer as a concurrent worker thread.
+ * Coordinates the sequential lifecycle: Entry -> Wash -> Dry -> Pay -> Exit.
+ * Employs robust retry loops with guaranteed resource release in finally blocks.
  */
 public class Customer implements Runnable {
     private final int id;
@@ -23,7 +22,7 @@ public class Customer implements Runnable {
     private final StatisticsManager stats;
     private final SimulationBus eventBus;
     private final long arrivalTime;
-    private static final int RETRY_DELAY_MS = 2000;
+    private static final int RETRY_DELAY_MS = 2000; // 2 seconds retry as specified in requirements
 
     public Customer(int id, ResourceManager resourceManager, 
                     StatisticsManager stats, SimulationBus eventBus) {
@@ -32,177 +31,120 @@ public class Customer implements Runnable {
         this.stats = stats;
         this.eventBus = eventBus;
         this.arrivalTime = System.currentTimeMillis();
-        stats.recordArrival();
-        Thread.currentThread().setName("Customer-" + id);
     }
 
     @Override
     public void run() {
-        Logger.log("Customer-" + id + " arrived at " + TimeUtil.formatTime(arrivalTime));
+        // Assign clear thread name for logging & thread tracking
+        Thread.currentThread().setName("CustomerThread-" + id);
         
+        // 1. Entrance gate arrival
+        stats.recordArrival();
+        int arrivedCount = stats.getCustomersArrived();
+        Logger.log(String.format("[ENTRY GATE] Customer-%d entered the laundromat at %s (Total Arrived: %d)",
+                id, TimeUtil.formatTime(arrivalTime), arrivedCount));
+        
+        if (eventBus != null) {
+            eventBus.customerArrived(id, arrivedCount);
+        }
+
         try {
-            // 1. WASH stage (with retry on failure)
+            // Stage 1: Washing Stage (4-6s, 5% mid-cycle failure with retry)
             wash();
-            
-            // 2. DRY stage (no failure)
+
+            // Stage 2: Drying Stage (3-5s, strict wait for available dryer)
             dry();
-            
-            // 3. PAY stage (with retry on failure)
+
+            // Stage 3: Payment Stage (1-2s, 5% failure or chaos scenario with 2s retry)
             pay();
-            
-            // 4. Complete
-            long completionTime = System.currentTimeMillis();
-            long totalTime = completionTime - arrivalTime;
-            stats.recordCompletion(totalTime);
-            
-            Logger.log("Customer-" + id + " completed! Total time: " + 
-                      TimeUtil.formatDuration(totalTime));
-            
+
+            // Stage 4: Exit Gate Departure
+            long departureTime = System.currentTimeMillis();
+            long totalDurationMs = departureTime - arrivalTime;
+            stats.recordCompletion(totalDurationMs);
+            int servedCount = stats.getCustomersServed();
+
+            Logger.log(String.format("[EXIT GATE] Customer-%d completed all stages and departed. Turnaround time: %s (Total Served: %d)",
+                    id, TimeUtil.formatDuration(totalDurationMs), servedCount));
+
+            if (eventBus != null) {
+                eventBus.customerCompleted(id, servedCount, totalDurationMs);
+            }
+
         } catch (InterruptedException e) {
-            Logger.log("Customer-" + id + " was interrupted");
+            Logger.log(String.format("[CUSTOMER INTERRUPTED] Customer-%d execution interrupted", id));
             Thread.currentThread().interrupt();
         }
     }
 
     /**
-     * Washing stage with retry on failure.
+     * Washing stage: blocks until washer acquired, runs wash cycle.
+     * If failure occurs, washer is immediately released in finally block,
+     * thread waits RETRY_DELAY_MS, and re-acquires a washer until successful.
      */
     private void wash() throws InterruptedException {
-        boolean success = false;
-        WashingMachine washer = null;
-        
-        while (!success) {
+        while (!Thread.currentThread().isInterrupted()) {
+            WashingMachine washer = null;
             try {
-                // Acquire washer (blocks if none available)
-                washer = resourceManager.acquireWasher();
-                
-                // Perform wash
-                int durationMs = RandomUtil.washDurationMillis();
-                Logger.log("Customer-" + id + " started washing on " + 
-                          washer.getClass().getSimpleName() + "-" + washer.getId() + 
-                          " for " + TimeUtil.formatDuration(durationMs));
-                
-                // Simulate washing
-                try {
-                    Thread.sleep(durationMs);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw e;
-                }
-                
-                // Check for random failure (5% chance)
-                if (RandomUtil.shouldFail(5)) {
-                    Logger.log("Customer-" + id + " washing FAILED on " + 
-                              washer.getClass().getSimpleName() + "-" + washer.getId());
-                    stats.recordWasherFailure();
-                    eventBus.machineFailed(MachineType.WASHER, washer.getId(), id);
-                    throw new MachineFailureException("Washing machine failed");
-                }
-                
-                // Success!
-                Logger.log("Customer-" + id + " completed washing on " + 
-                          washer.getClass().getSimpleName() + "-" + washer.getId());
-                success = true;
-                
+                washer = resourceManager.acquireWasher(id);
+                washer.wash(id, eventBus);
+                return; // Successfully finished wash cycle
             } catch (MachineFailureException e) {
-                // Failure occurred, retry
-                Logger.log("Customer-" + id + " will retry washing after " + 
-                          RETRY_DELAY_MS + "ms");
-                Thread.sleep(RETRY_DELAY_MS);
+                stats.recordWasherFailure();
+                Logger.log(String.format("Customer-%d: Washer failure encountered. Washer released. Waiting %s before re-acquiring...",
+                        id, TimeUtil.formatDuration(RETRY_DELAY_MS)));
             } finally {
-                // Always release the washer
                 if (washer != null) {
                     resourceManager.releaseWasher(washer);
-                    eventBus.machineIdle(MachineType.WASHER, washer.getId());
                 }
             }
+            // Machine is released; wait retry delay before next attempt
+            Thread.sleep(RETRY_DELAY_MS);
         }
+        throw new InterruptedException("Customer-" + id + " interrupted during wash retry loop");
     }
 
     /**
-     * Drying stage (no failure).
+     * Drying stage: blocks until dryer acquired, runs dry cycle, safely releases dryer.
      */
     private void dry() throws InterruptedException {
         Dryer dryer = null;
-        
         try {
-            // Acquire dryer (blocks if none available)
-            dryer = resourceManager.acquireDryer();
-            
-            // Perform drying
-            int durationMs = RandomUtil.dryDurationMillis();
-            Logger.log("Customer-" + id + " started drying on " + 
-                      dryer.getClass().getSimpleName() + "-" + dryer.getId() + 
-                      " for " + TimeUtil.formatDuration(durationMs));
-            
-            // Simulate drying
-            Thread.sleep(durationMs);
-            
-            Logger.log("Customer-" + id + " completed drying on " + 
-                      dryer.getClass().getSimpleName() + "-" + dryer.getId());
-            
+            dryer = resourceManager.acquireDryer(id);
+            dryer.dry(id, eventBus);
         } finally {
-            // Always release the dryer
             if (dryer != null) {
                 resourceManager.releaseDryer(dryer);
-                eventBus.machineIdle(MachineType.DRYER, dryer.getId());
             }
         }
     }
 
     /**
-     * Payment stage with retry on failure.
+     * Payment stage: blocks until kiosk acquired, processes payment.
+     * If kiosk fails (or chaos down), kiosk is immediately released in finally block,
+     * thread waits RETRY_DELAY_MS (2s), and retries until payment succeeds.
      */
     private void pay() throws InterruptedException {
-        boolean success = false;
-        PaymentKiosk kiosk = null;
-        
-        while (!success) {
+        while (!Thread.currentThread().isInterrupted()) {
+            PaymentKiosk kiosk = null;
             try {
-                // Acquire kiosk (blocks if none available)
-                kiosk = resourceManager.acquireKiosk();
-                
-                // Process payment
-                int durationMs = RandomUtil.paymentDurationMillis();
-                Logger.log("Customer-" + id + " started payment at " + 
-                          kiosk.getClass().getSimpleName() + "-" + kiosk.getId() + 
-                          " for " + TimeUtil.formatDuration(durationMs));
-                
-                // Simulate payment
-                try {
-                    Thread.sleep(durationMs);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw e;
-                }
-                
-                // Check for random failure (5% chance)
-                if (RandomUtil.shouldFail(5)) {
-                    Logger.log("Customer-" + id + " payment FAILED at " + 
-                              kiosk.getClass().getSimpleName() + "-" + kiosk.getId());
-                    stats.recordPaymentFailure();
-                    eventBus.machineFailed(MachineType.KIOSK, kiosk.getId(), id);
-                    throw new PaymentFailureException("Payment kiosk failed");
-                }
-                
-                // Success!
-                Logger.log("Customer-" + id + " completed payment at " + 
-                          kiosk.getClass().getSimpleName() + "-" + kiosk.getId());
-                success = true;
-                
+                kiosk = resourceManager.acquireKiosk(id);
+                boolean forceChaosFail = resourceManager.isChaosModeActive();
+                kiosk.processPayment(id, eventBus, forceChaosFail);
+                return; // Successfully completed payment
             } catch (PaymentFailureException e) {
-                // Failure occurred, retry
-                Logger.log("Customer-" + id + " will retry payment after " + 
-                          RETRY_DELAY_MS + "ms");
-                Thread.sleep(RETRY_DELAY_MS);
+                stats.recordPaymentFailure();
+                Logger.log(String.format("Customer-%d: Payment kiosk failed. Kiosk released. Waiting %s before retrying...",
+                        id, TimeUtil.formatDuration(RETRY_DELAY_MS)));
             } finally {
-                // Always release the kiosk
                 if (kiosk != null) {
                     resourceManager.releaseKiosk(kiosk);
-                    eventBus.machineIdle(MachineType.KIOSK, kiosk.getId());
                 }
             }
+            // Kiosk is released; wait 2s retry delay before next attempt
+            Thread.sleep(RETRY_DELAY_MS);
         }
+        throw new InterruptedException("Customer-" + id + " interrupted during payment retry loop");
     }
 
     public int getId() {

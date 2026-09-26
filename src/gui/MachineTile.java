@@ -6,132 +6,147 @@ import javax.swing.*;
 import java.awt.*;
 
 /**
- * Visual representation of a single machine in the GUI.
+ * Modern visual representation of an individual machine card in the laundromat GUI.
+ * Shows machine name, live operational status, active customer ID, and animated progress.
  */
 public class MachineTile extends JPanel {
     private final MachineType type;
     private final int machineId;
-    private final Color baseColor;
-    
+
+    private final JLabel lblName;
     private final JLabel lblStatus;
     private final JLabel lblCustomer;
     private final JProgressBar progressBar;
-    
-    private Timer animationTimer;
-    private int progressValue = 0;
-    private boolean isBusy = false;
-    private String currentCustomer = "";
 
-    public MachineTile(MachineType type, int machineId, Color baseColor) {
+    private Timer progressTimer;
+    private long cycleStartTime;
+    private int cycleDurationMs;
+
+    // Palette
+    private static final Color COLOR_BG_IDLE = new Color(248, 250, 252);
+    private static final Color COLOR_BG_BUSY = new Color(238, 246, 255);
+    private static final Color COLOR_BG_FAILED = new Color(254, 242, 242);
+
+    private static final Color COLOR_STATUS_IDLE = new Color(22, 163, 74);
+    private static final Color COLOR_STATUS_BUSY = new Color(37, 99, 235);
+    private static final Color COLOR_STATUS_FAILED = new Color(220, 38, 38);
+
+    private static final Color COLOR_BORDER = new Color(226, 232, 240);
+
+    public MachineTile(MachineType type, int machineId) {
         this.type = type;
         this.machineId = machineId;
-        this.baseColor = baseColor;
-        
-        setLayout(new BorderLayout(2, 2));
-        setBorder(BorderFactory.createLineBorder(Color.GRAY, 1));
-        setPreferredSize(new Dimension(100, 70));
-        setBackground(Color.WHITE);
-        
-        // Name label
-        JLabel lblName = new JLabel(type.name() + "-" + machineId, JLabel.CENTER);
-        lblName.setFont(new Font("Arial", Font.BOLD, 11));
+
+        setLayout(new BorderLayout(4, 6));
+        setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(COLOR_BORDER, 1, true),
+                BorderFactory.createEmptyBorder(8, 8, 8, 8)
+        ));
+        setPreferredSize(new Dimension(115, 88));
+        setBackground(COLOR_BG_IDLE);
+
+        // Header label
+        String typePrefix;
+        switch (type) {
+            case WASHER: typePrefix = "🧺 Washer"; break;
+            case DRYER:  typePrefix = "🌀 Dryer"; break;
+            case KIOSK:  typePrefix = "💳 Kiosk"; break;
+            default:     typePrefix = "Machine";
+        }
+        lblName = new JLabel(typePrefix + " #" + machineId, SwingConstants.CENTER);
+        lblName.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        lblName.setForeground(new Color(51, 65, 85));
         add(lblName, BorderLayout.NORTH);
-        
-        // Center panel for status and customer
-        JPanel centerPanel = new JPanel(new BorderLayout());
+
+        // Center panel (Status badge & Customer)
+        JPanel centerPanel = new JPanel(new GridLayout(2, 1, 2, 2));
         centerPanel.setOpaque(false);
-        
-        lblStatus = new JLabel("IDLE", JLabel.CENTER);
-        lblStatus.setFont(new Font("Arial", Font.PLAIN, 10));
-        centerPanel.add(lblStatus, BorderLayout.CENTER);
-        
-        lblCustomer = new JLabel("", JLabel.CENTER);
-        lblCustomer.setFont(new Font("Arial", Font.PLAIN, 9));
-        centerPanel.add(lblCustomer, BorderLayout.SOUTH);
-        
+
+        lblStatus = new JLabel("● IDLE", SwingConstants.CENTER);
+        lblStatus.setFont(new Font("Segoe UI", Font.BOLD, 11));
+        lblStatus.setForeground(COLOR_STATUS_IDLE);
+        centerPanel.add(lblStatus);
+
+        lblCustomer = new JLabel("Available", SwingConstants.CENTER);
+        lblCustomer.setFont(new Font("Segoe UI", Font.PLAIN, 10));
+        lblCustomer.setForeground(new Color(100, 116, 139));
+        centerPanel.add(lblCustomer);
+
         add(centerPanel, BorderLayout.CENTER);
-        
+
         // Progress bar
         progressBar = new JProgressBar(0, 100);
-        progressBar.setPreferredSize(new Dimension(80, 10));
-        progressBar.setStringPainted(false);
+        progressBar.setValue(0);
+        progressBar.setPreferredSize(new Dimension(100, 6));
+        progressBar.setForeground(COLOR_STATUS_BUSY);
+        progressBar.setBackground(new Color(226, 232, 240));
+        progressBar.setBorderPainted(false);
         add(progressBar, BorderLayout.SOUTH);
-        
+
         setIdle();
     }
 
     /**
-     * Set this machine to BUSY state with a customer.
+     * Mark machine as BUSY with customer ID and cycle duration.
      */
-    public void setBusy(String customerName) {
-        if (animationTimer != null) {
-            animationTimer.stop();
+    public void setBusy(int customerId, int durationMs) {
+        if (progressTimer != null) {
+            progressTimer.stop();
         }
-        
-        isBusy = true;
-        currentCustomer = customerName;
-        progressValue = 0;
+
+        setBackground(COLOR_BG_BUSY);
+        lblStatus.setText("● BUSY");
+        lblStatus.setForeground(COLOR_STATUS_BUSY);
+        lblCustomer.setText("Customer #" + customerId);
+        lblCustomer.setForeground(new Color(30, 41, 59));
+        progressBar.setForeground(COLOR_STATUS_BUSY);
+
+        this.cycleDurationMs = Math.max(durationMs, 500);
+        this.cycleStartTime = System.currentTimeMillis();
         progressBar.setValue(0);
-        
-        setBackground(baseColor.brighter());
-        lblStatus.setText("BUSY");
-        lblStatus.setForeground(Color.BLACK);
-        lblCustomer.setText(customerName);
-        
-        // Animate progress bar smoothly
-        animationTimer = new Timer(100, e -> {
-            progressValue += 5;
-            if (progressValue > 100) {
-                progressValue = 100;
-                animationTimer.stop();
+
+        progressTimer = new Timer(50, e -> {
+            long elapsed = System.currentTimeMillis() - cycleStartTime;
+            int progress = (int) Math.min(100, (elapsed * 100) / cycleDurationMs);
+            progressBar.setValue(progress);
+            if (progress >= 100) {
+                ((Timer) e.getSource()).stop();
             }
-            progressBar.setValue(progressValue);
         });
-        animationTimer.start();
+        progressTimer.start();
     }
 
     /**
-     * Set this machine to IDLE state.
+     * Mark machine as IDLE.
      */
     public void setIdle() {
-        if (animationTimer != null) {
-            animationTimer.stop();
-            animationTimer = null;
+        if (progressTimer != null) {
+            progressTimer.stop();
+            progressTimer = null;
         }
-        
-        isBusy = false;
-        currentCustomer = "";
-        progressValue = 0;
+
+        setBackground(COLOR_BG_IDLE);
+        lblStatus.setText("● IDLE");
+        lblStatus.setForeground(COLOR_STATUS_IDLE);
+        lblCustomer.setText("Available");
+        lblCustomer.setForeground(new Color(100, 116, 139));
         progressBar.setValue(0);
-        
-        setBackground(Color.WHITE);
-        lblStatus.setText("IDLE");
-        lblStatus.setForeground(Color.GREEN.darker());
-        lblCustomer.setText("");
     }
 
     /**
-     * Set this machine to FAILED state briefly.
+     * Mark machine as FAILED with customer ID.
      */
     public void setFailed(int customerId) {
-        if (animationTimer != null) {
-            animationTimer.stop();
+        if (progressTimer != null) {
+            progressTimer.stop();
         }
-        
-        isBusy = false;
-        setBackground(Color.RED);
-        lblStatus.setText("FAILED");
-        lblStatus.setForeground(Color.WHITE);
-        lblCustomer.setText("Cust-" + customerId);
-        progressBar.setValue(0);
-        
-        // Reset after 2 seconds
-        Timer resetTimer = new Timer(2000, e -> {
-            if (!isBusy) {
-                setIdle();
-            }
-        });
-        resetTimer.setRepeats(false);
-        resetTimer.start();
+
+        setBackground(COLOR_BG_FAILED);
+        lblStatus.setText("⚠ FAILED");
+        lblStatus.setForeground(COLOR_STATUS_FAILED);
+        lblCustomer.setText("Cust #" + customerId + " Retrying");
+        lblCustomer.setForeground(COLOR_STATUS_FAILED);
+        progressBar.setForeground(COLOR_STATUS_FAILED);
+        progressBar.setValue(100);
     }
 }
