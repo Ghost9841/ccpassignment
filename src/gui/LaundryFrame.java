@@ -33,8 +33,8 @@ public class LaundryFrame extends JFrame implements SimulationListener {
     private final JLabel lblKioskQueue = new JLabel("Waiting Queue: 0");
 
     // Dashboard metrics cards
-    private final JLabel lblArrived = new JLabel("0 / 50", SwingConstants.CENTER);
-    private final JLabel lblServed = new JLabel("0 / 50", SwingConstants.CENTER);
+    private final JLabel lblArrived = new JLabel("0", SwingConstants.CENTER);
+    private final JLabel lblServed = new JLabel("0 / 0", SwingConstants.CENTER);
     private final JLabel lblInShop = new JLabel("0", SwingConstants.CENTER);
     private final JLabel lblAvgTime = new JLabel("0.0s", SwingConstants.CENTER);
     private final JLabel lblMaxWashers = new JLabel("0 / 6", SwingConstants.CENTER);
@@ -137,7 +137,7 @@ public class LaundryFrame extends JFrame implements SimulationListener {
         JPanel controlsPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 5));
         controlsPanel.setOpaque(false);
 
-        btnStartNormal = new JButton("▶ Run Normal (50 Cust)");
+        btnStartNormal = new JButton("▶ Run Normal (60s)");
         btnStartNormal.setFont(new Font("Segoe UI", Font.BOLD, 12));
         btnStartNormal.setBackground(new Color(37, 99, 235));
         btnStartNormal.setForeground(Color.WHITE);
@@ -362,8 +362,8 @@ public class LaundryFrame extends JFrame implements SimulationListener {
         int served = stats.getCustomersServed();
         int inShop = Math.max(0, arrived - served);
 
-        lblArrived.setText(arrived + " / 50");
-        lblServed.setText(served + " / 50");
+        lblArrived.setText(String.valueOf(arrived));
+        lblServed.setText(served + " / " + arrived);
         lblInShop.setText(String.valueOf(inShop));
         lblAvgTime.setText(String.format("%.1fs", stats.getAverageCompletionTimeMs() / 1000.0));
         lblMaxWashers.setText(stats.getMaxConcurrentWashers() + " / 6");

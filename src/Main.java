@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit;
  * and graceful completion tracking.
  */
 public class Main {
-    public static final int TOTAL_CUSTOMERS = 50;
+    public static final int ARRIVAL_DURATION_SECONDS = 60;
 
     private static LaundryFacility facility;
     private static StatisticsManager stats;
@@ -49,7 +49,7 @@ public class Main {
 
             // Wire UI buttons to trigger simulations
             gui.setSimulationTriggers(
-                    () -> runSimulationAsync(false), // Normal 50-customer simulation
+                    () -> runSimulationAsync(false), // Normal 60s time-driven simulation
                     () -> runSimulationAsync(true)   // Bonus Congestion Chaos scenario
             );
 
@@ -81,13 +81,13 @@ public class Main {
 
     /**
      * Core simulation workflow:
-     * Resets metrics, starts clock, dispatches 50 customer threads,
-     * and awaits full completion.
+     * Resets metrics, starts clock, admits customers for 60 seconds (0-3s interval),
+     * closes the gate at 60s, and serves all admitted customers to full completion.
      */
     private static void executeSimulation(boolean chaosMode) {
         Logger.log("\n=======================================================");
-        Logger.log(chaosMode ? ">>> STARTING BONUS CONGESTION CHAOS SIMULATION <<<"
-                             : ">>> STARTING NORMAL 50-CUSTOMER SIMULATION <<<");
+        Logger.log(chaosMode ? ">>> STARTING BONUS CONGESTION CHAOS SIMULATION (60s) <<<"
+                             : ">>> STARTING TIME-DRIVEN SIMULATION (60s ARRIVAL WINDOW) <<<");
         Logger.log("=======================================================");
 
         // Reset state for new run
@@ -99,18 +99,24 @@ public class Main {
 
         ExecutorService executor = Executors.newCachedThreadPool();
         long simStartTime = System.currentTimeMillis();
+        long arrivalWindowMs = ARRIVAL_DURATION_SECONDS * 1000L;
 
-        Logger.log("Entry gate opened: 50 customers will arrive sequentially (0-3s interval)...");
+        Logger.log(String.format("Entry gate opened: Customers will arrive (0-3s interval) for %d seconds...", ARRIVAL_DURATION_SECONDS));
 
-        // Customer arrival loop: exactly 50 customers
-        for (int i = 1; i <= TOTAL_CUSTOMERS; i++) {
-            Customer customer = new Customer(i, resourceManager, stats, eventBus);
+        // Time-driven customer arrival loop: customers arrive while within the 60-second window
+        int customerId = 1;
+        while (System.currentTimeMillis() - simStartTime < arrivalWindowMs) {
+            Customer customer = new Customer(customerId++, resourceManager, stats, eventBus);
             executor.execute(customer);
 
             // Random arrival interval between 0 and 3 seconds
             try {
                 int gap = RandomUtil.arrivalGapMillis();
-                Thread.sleep(gap);
+                long remainingTime = arrivalWindowMs - (System.currentTimeMillis() - simStartTime);
+                if (remainingTime <= 0) {
+                    break;
+                }
+                Thread.sleep(Math.min(gap, remainingTime));
             } catch (InterruptedException e) {
                 Logger.log("Customer arrival loop interrupted");
                 Thread.currentThread().interrupt();
@@ -118,8 +124,11 @@ public class Main {
             }
         }
 
-        Logger.log("All " + TOTAL_CUSTOMERS + " customers have arrived at the facility entrance.");
-        Logger.log("Awaiting all customers to complete wash, dry, and payment stages...");
+        int totalArrived = customerId - 1;
+        Logger.log("----------------------------------------------------------------------");
+        Logger.log(String.format("[ENTRY GATE CLOSED] %d-second arrival window elapsed. Total customers arrived: %d.", ARRIVAL_DURATION_SECONDS, totalArrived));
+        Logger.log("No further customers will enter. Serving all customers inside facility to completion...");
+        Logger.log("----------------------------------------------------------------------");
 
         // Graceful shutdown: cease accepting new arrivals and await in-flight customers
         executor.shutdown();
